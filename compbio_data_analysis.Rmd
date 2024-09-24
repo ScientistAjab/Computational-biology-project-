@@ -184,72 +184,7 @@ for (i in seq_along(pls_results)) {
 
   
 ```
-#fix VIP plot
-```{r}
-# Install or update mixOmics package
-install.packages("mixOmics")
 
-# Load mixOmics package
-library(mixOmics)
-
-# Plot VIP score plot
-for (i in seq_along(pls_results)) {
-  mixOmics::plotVIP(pls_results[[i]], 
-                    comp = 1:2, 
-                    contrib = "max",
-                    title = paste("VIP Score Plot for", names(pls_results)[i]),
-                    cex = 0.5)  # Adjust font size if needed
-}
-```
-fix spls 
-```{r}
-# Install and load mixOmics package if not already installed
-if (!requireNamespace("mixOmics", quietly = TRUE)) {
-  install.packages("mixOmics")
-}
-library(mixOmics)
-
-# Create a list to store sPLS results for each subgroup
-spls_results <- list()
-
-# Iterate over each subgroup
-for (group_name in names(subgroups)) {
-  # Get the samples belonging to the subgroup
-  subgroup_samples <- rownames(subgroups[[group_name]])
-  
-  # Ensure samples are present in both datasets
-  valid_samples <- intersect(subgroup_samples, rownames(multi_omics_data$transcriptome))
-  valid_samples <- intersect(valid_samples, rownames(multi_omics_data$metabolome_pos))
-  
-  # Subset the multi-omics data based on the valid samples
-  transcriptome_subgroup <- multi_omics_data$transcriptome[valid_samples, , drop = FALSE]
-  metabolome_subgroup <- multi_omics_data$metabolome_pos[valid_samples, , drop = FALSE]
-  
-  # Prepare data for sPLS-DA
-  Y <- as.factor(subgroups[[group_name]]$REF)  # Response variable
-  X <- list(transcriptome = transcriptome_subgroup, metabolome = metabolome_subgroup)
-  
-  # Run sPLS-DA for the subgroup
-  pls_fit <- splsda(X, Y, ncomp = 2)
-  
-  # Store the sPLS-DA results
-  spls_results[[group_name]] <- pls_fit
-}
-
-# Plot the sPLS-DA results for each subgroup
-for (i in seq_along(spls_results)) {
-  plotIndiv(spls_results[[i]], 
-            comp = 1:2, 
-            group = as.character(subgroups[[i]]$REF), 
-            ind.names = FALSE, 
-            legend = TRUE, 
-            title = paste("sPLS-DA for", names(spls_results)[i]),
-            pch = 16,  # Adjust the point type (solid circle)
-            col = "red",  # Set the color to red
-            cex = 0.7)  # Adjust the point size
-}
-
-```
 
 
 
