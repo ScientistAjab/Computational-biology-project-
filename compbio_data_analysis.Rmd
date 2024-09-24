@@ -1,0 +1,256 @@
+
+#load essential libraries 
+```{r}
+# Load the mixOmics package
+library(mixOmics)
+```
+
+
+#The function ensures the metadata and data matrices are properly aligned.
+```{r}
+# Define the load.dataset function
+load.dataset <- function(meta.file, meta.sep = ',', data.file, data.sep = ',') {
+  meta <- read.table(meta.file, header = TRUE, sep = meta.sep, row.names = 1, check.names = FALSE)
+  data <- read.table(data.file, header = TRUE, sep = data.sep, row.names = 1, check.names = FALSE)
+
+  data <- as.matrix(data)
+
+  mids <- match(row.names(meta), colnames(data))
+  data <- t(data[, mids[!is.na(mids)]])
+  meta <- meta[!is.na(mids),]
+
+  stopifnot(row.names(meta) == row.names(data))
+  stopifnot(!any(is.na(row.names(meta))))
+  stopifnot(!any(is.na(row.names(data))))
+
+  return(list(meta.data = meta, data.matrix = data))
+}
+
+
+```
+
+#Use the load.dataset function to load all relevant data.
+```{r}
+# Load the sample metadata
+sample_metadata <- read.csv("data/sample_sheet.csv", row.names = 1)
+
+# Load and prepare the data using load.dataset function
+transcriptome <- load.dataset(meta.file = "data/sample_sheet.csv", data.file = "data/rna_vst_counts.csv")
+metabolome_pos <- load.dataset(meta.file = "data/sample_sheet.csv", data.file = "data/polar_pos_pqn_imputed_glog.csv")
+metabolome_neg <- load.dataset(meta.file = "data/sample_sheet.csv", data.file = "data/polar_neg_pqn_imputed_glog.csv")
+chemicals <- load.dataset(meta.file = "data/sample_sheet.csv", data.file = "data/water_chemicals.tsv", data.sep = '\t')
+
+# Extract data matrices and ensure sample names match across datasets
+transcriptome_data <- transcriptome$data.matrix
+metabolome_pos_data <- metabolome_pos$data.matrix
+metabolome_neg_data <- metabolome_neg$data.matrix
+chem_data <- chemicals$data.matrix
+
+
+```
+
+#run RGCCA 
+```{r}
+# Create a list of omics data
+data_list <- list(
+  transcriptome = transcriptome_data,
+  metabolome_pos = metabolome_pos_data,
+  metabolome_neg = metabolome_neg_data,
+  chemicals = chem_data
+)
+
+
+```
+
+```{r}
+library(WGCNA)
+# Correlation analysis for hierarchical clustering
+cor_matrix <- cor(t(data_list$transcriptome))
+dist_matrix <- as.dist(1 - cor_matrix)
+clustering <- hclust(dist_matrix, method = "average")
+
+# Plot the dendrogram
+plot(clustering, main = "Hierarchical Clustering of Transcriptome Data")
+
+# Identify modules (clusters of genes)
+cutree_res <- cutree(clustering, k = 6)  # Adjust 'k' based on the dendrogram
+
+# Map modules to colors
+library(dynamicTreeCut)
+modules <- cutreeDynamic(dendro = clustering, distM = as.matrix(dist_matrix),
+                         deepSplit = 2, pamRespectsDendro = FALSE,
+                         minClusterSize = 30)
+module_colors <- labels2colors(modules)
+
+# Plot dendrogram with module colors
+plotDendroAndColors(clustering, module_colors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+# Extract concentration information from sample names
+concentration <- gsub(".*A(\\d+)B.*", "\\1", rownames(data_list$transcriptome))  # Extract concentration from sample names
+
+# Create a heatmap of the transcriptome data
+heatmap_data <- t(data_list$transcriptome)  # Transpose the data
+heatmap_data <- heatmap_data[order(concentration), ]  # Order rows by concentration
+
+
+# Generate heatmap with red and blue colors
+heatmap(heatmap_data, Rowv = NA, Colv = NA, col = c("red", "white", "blue"),
+        scale = "row", margins = c(5, 10), main = "Transcriptome Heatmap")
+
+```
+
+```{r}
+# Combine all datasets into a single object
+multi_omics_data <- list(transcriptome = transcriptome$data,
+                         metabolome_pos = metabolome_pos$data,
+                         metabolome_neg = metabolome_neg$data)
+
+# Read the sample sheet (assuming it's a CSV file and the first column contains the sample names)
+sample_metadata <- read.csv("data/sample_sheet.csv", row.names = 1)
+
+# Debug: Print the row names of the sample_metadata
+print("Row names of sample_metadata:")
+print(rownames(sample_metadata))
+
+# Extract the relevant part of the sample name
+sample_metadata$REF <- sapply(rownames(sample_metadata), function(x) {
+  if (grepl("^CK", x)) {  # Updated pattern to match control samples
+    return("Control")
+  } else if (grepl("A", x)) {
+    return("1X")
+  } else if (grepl("B", x)) {
+    return("10X")
+  } else {
+    return(NA)
+  }
+})
+
+# Convert REF to a factor with appropriate levels
+sample_metadata$REF <- factor(sample_metadata$REF, levels = c("1X", "10X", "Control"))
+
+# Print the table of REF values to verify
+print("Table of REF values:")
+print(table(sample_metadata$REF))
+
+# Print the metadata to see the assigned REF values
+print("Sample metadata with REF values:")
+print(sample_metadata)
+
+# Synchronize the data: Keep only the samples that are present in both datasets and the metadata
+common_samples <- intersect(intersect(rownames(multi_omics_data$transcriptome), rownames(multi_omics_data$metabolome_pos)), rownames(sample_metadata))
+multi_omics_data$transcriptome <- multi_omics_data$transcriptome[common_samples, , drop = FALSE]
+multi_omics_data$metabolome_pos <- multi_omics_data$metabolome_pos[common_samples, , drop = FALSE]
+sample_metadata <- sample_metadata[common_samples, , drop = FALSE]
+
+# Subgroup the data based on the concentration condition
+subgroups <- split(sample_metadata, sample_metadata$REF)
+
+# Perform PLS-DA using the subgrouped data
+
+# Create a list to store PLS results for each subgroup
+pls_results <- list()
+
+# Iterate over each subgroup
+for (group_name in names(subgroups)) {
+  # Get the samples belonging to the subgroup
+  subgroup_samples <- rownames(subgroups[[group_name]])
+  
+  # Ensure samples are present in both datasets
+  valid_samples <- intersect(subgroup_samples, rownames(multi_omics_data$transcriptome))
+  valid_samples <- intersect(valid_samples, rownames(multi_omics_data$metabolome_pos))
+  
+  # Subset the multi-omics data based on the valid samples
+  transcriptome_subgroup <- multi_omics_data$transcriptome[valid_samples, , drop = FALSE]
+  metabolome_subgroup <- multi_omics_data$metabolome_pos[valid_samples, , drop = FALSE]
+  
+  # Run PLS-DA for the subgroup
+  pls_results[[group_name]] <- pls(transcriptome_subgroup, metabolome_subgroup, ncomp = 2)
+}
+
+# Plot the PLS results for each subgroup
+for (i in seq_along(pls_results)) {
+  plotIndiv(pls_results[[i]], 
+            comp = 1:2, 
+            group = as.character(subgroups[[i]]$REF), 
+            ind.names = FALSE, 
+            legend = TRUE, 
+            title = paste("PLS-DA for", names(pls_results)[i]),
+            pch = 16,  # Adjust the point type (solid circle)
+            col = "red",  # Set the color to red
+            cex = 0.7)  # Adjust the point size
+}
+
+
+  
+```
+#fix VIP plot
+```{r}
+# Install or update mixOmics package
+install.packages("mixOmics")
+
+# Load mixOmics package
+library(mixOmics)
+
+# Plot VIP score plot
+for (i in seq_along(pls_results)) {
+  mixOmics::plotVIP(pls_results[[i]], 
+                    comp = 1:2, 
+                    contrib = "max",
+                    title = paste("VIP Score Plot for", names(pls_results)[i]),
+                    cex = 0.5)  # Adjust font size if needed
+}
+```
+fix spls 
+```{r}
+# Install and load mixOmics package if not already installed
+if (!requireNamespace("mixOmics", quietly = TRUE)) {
+  install.packages("mixOmics")
+}
+library(mixOmics)
+
+# Create a list to store sPLS results for each subgroup
+spls_results <- list()
+
+# Iterate over each subgroup
+for (group_name in names(subgroups)) {
+  # Get the samples belonging to the subgroup
+  subgroup_samples <- rownames(subgroups[[group_name]])
+  
+  # Ensure samples are present in both datasets
+  valid_samples <- intersect(subgroup_samples, rownames(multi_omics_data$transcriptome))
+  valid_samples <- intersect(valid_samples, rownames(multi_omics_data$metabolome_pos))
+  
+  # Subset the multi-omics data based on the valid samples
+  transcriptome_subgroup <- multi_omics_data$transcriptome[valid_samples, , drop = FALSE]
+  metabolome_subgroup <- multi_omics_data$metabolome_pos[valid_samples, , drop = FALSE]
+  
+  # Prepare data for sPLS-DA
+  Y <- as.factor(subgroups[[group_name]]$REF)  # Response variable
+  X <- list(transcriptome = transcriptome_subgroup, metabolome = metabolome_subgroup)
+  
+  # Run sPLS-DA for the subgroup
+  pls_fit <- splsda(X, Y, ncomp = 2)
+  
+  # Store the sPLS-DA results
+  spls_results[[group_name]] <- pls_fit
+}
+
+# Plot the sPLS-DA results for each subgroup
+for (i in seq_along(spls_results)) {
+  plotIndiv(spls_results[[i]], 
+            comp = 1:2, 
+            group = as.character(subgroups[[i]]$REF), 
+            ind.names = FALSE, 
+            legend = TRUE, 
+            title = paste("sPLS-DA for", names(spls_results)[i]),
+            pch = 16,  # Adjust the point type (solid circle)
+            col = "red",  # Set the color to red
+            cex = 0.7)  # Adjust the point size
+}
+
+```
+
+
+
+
